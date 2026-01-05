@@ -1,61 +1,65 @@
-import React, { useState } from 'react';
-import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query';
-import { UploadZone } from './components/UploadZone';
-import { DirectorTable } from './components/DirectorTable';
-import { uploadExcel } from './api';
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-// Create a client
+// --- Contexts ---
+import { AuthProvider, useAuth } from './context/AuthContext';
+
+// --- Pages ---
+import { Login } from './pages/Login';
+import { Dashboard } from './pages/Dashboard';
+// import { EpisodeDirector } from './pages/EpisodeDirector'; // Un-comment this when you create the file
+
+// --- Configuration ---
 const queryClient = new QueryClient();
 
-function Dashboard() {
-  const [scriptData, setScriptData] = useState(null);
+// --- Protected Route Wrapper ---
+// This kicks users back to /login if they aren't signed in
+const ProtectedRoute = ({ children }) => {
+  const { user } = useAuth();
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+  return children;
+};
 
-  const uploadMutation = useMutation({
-    mutationFn: uploadExcel,
-    onSuccess: (data) => {
-      setScriptData(data.data);
-    },
-    onError: (err) => {
-      alert("Error uploading file: " + err.message);
-    }
-  });
-
+// --- Main Routes ---
+function AppRoutes() {
   return (
-    <div className="min-h-screen bg-slate-50 p-8">
-      <div className="max-w-7xl mx-auto space-y-8">
-        
-        {/* Header */}
-        <header className="flex items-center gap-3 mb-8">
-          <div className="bg-indigo-600 p-2 rounded-lg">
-            <span className="text-2xl">🎬</span>
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">MotionX Director</h1>
-            <p className="text-slate-500 text-sm">AI-Powered Audio Context Engine</p>
-          </div>
-        </header>
+    <Routes>
+      {/* Public Route */}
+      <Route path="/login" element={<Login />} />
+      
+      {/* Protected Routes */}
+      <Route path="/dashboard" element={
+        <ProtectedRoute>
+          <Dashboard />
+        </ProtectedRoute>
+      } />
 
-        {/* Main Content Area */}
-        {!scriptData ? (
-          <div className="max-w-2xl mx-auto mt-20">
-             <UploadZone 
-               onFileSelect={(file) => uploadMutation.mutate(file)} 
-               isUploading={uploadMutation.isPending}
-             />
-          </div>
-        ) : (
-          <DirectorTable data={scriptData} />
-        )}
-
-      </div>
-    </div>
+      {/* TODO: Add your Episode Route here later
+         <Route path="/series/:seriesId/episode/:episodeId" element={
+           <ProtectedRoute><EpisodeDirector /></ProtectedRoute>
+         } /> 
+      */}
+      
+      {/* Default Redirect: Send unknown URLs to Dashboard */}
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+    </Routes>
   );
 }
 
+// --- App Shell ---
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Dashboard />
+      <AuthProvider>
+        <BrowserRouter>
+          <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+            <AppRoutes />
+          </div>
+        </BrowserRouter>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }
