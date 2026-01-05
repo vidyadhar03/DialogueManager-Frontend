@@ -1,8 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react'; // <--- ADDED useEffect HERE
-import { Play, Loader2, Save, Filter, Users, Mic } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Play, Loader2, Filter, Users } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
-import { generateTags } from '../api';
+import axios from 'axios';
 import { VoiceSelector } from './VoiceSelector';
+
+const API_URL = "http://127.0.0.1:8000";
 
 export function DirectorTable({ data, availableVoices }) {
   // 1. Sanitize Data
@@ -17,20 +19,18 @@ export function DirectorTable({ data, availableVoices }) {
 
   const [scriptLines, setScriptLines] = useState(cleanData);
 
-  // Sync state when parent data changes (Casting Modal)
+  // Sync state when parent data changes
   useEffect(() => {
       setScriptLines(cleanData);
   }, [cleanData]);
 
-  // 2. State for Range Filtering
-  // Fix: Handle empty data gracefully to avoid NaN
+  // 2. Range Logic
   const minPanel = useMemo(() => scriptLines.length ? Math.min(...scriptLines.map(d => d.panel_number)) : 0, [scriptLines]);
   const maxPanel = useMemo(() => scriptLines.length ? Math.max(...scriptLines.map(d => d.panel_number)) : 0, [scriptLines]);
   
   const [startPanel, setStartPanel] = useState(minPanel || 1);
   const [endPanel, setEndPanel] = useState(maxPanel || 1);
 
-  // Update range defaults when data loads
   useEffect(() => {
     if (minPanel > 0) {
         setStartPanel(minPanel);
@@ -38,7 +38,50 @@ export function DirectorTable({ data, availableVoices }) {
     }
   }, [minPanel, maxPanel]);
 
-  // --- HANDLERS ---
+  // 3. AI Analysis Mutation (THE MISSING PIECE)
+  const analyzeMutation = useMutation({
+    mutationFn: async (linesToAnalyze) => {
+        // Only send necessary fields to save tokens
+        const payload = {
+            lines: linesToAnalyze.map(line => ({
+                id: line.id,
+                panel_number: line.panel_number,
+                dialogue: line.dialogue,
+                action: line.action,
+                sfx: line.sfx,
+                characters: line.characters
+            }))
+        };
+        const res = await axios.post(`${API_URL}/analyze_emotions`, payload);
+        return res.data; // Returns { "1_0": "[Angry]", "1_1": "[Sad]" }
+    },
+    onSuccess: (emotionMap) => {
+        // Merge the AI results back into the table
+        setScriptLines(prev => prev.map(line => {
+            if (emotionMap[line.id]) {
+                return { ...line, suggested_emotion: emotionMap[line.id] };
+            }
+            return line;
+        }));
+    },
+    onError: (err) => alert("AI Error: " + err.message)
+  });
+
+  // 4. Handler for the Button
+  const handleRunDirector = () => {
+    // Filter lines currently in view/range
+    const linesInRange = scriptLines.filter(
+        l => l.panel_number >= startPanel && l.panel_number <= endPanel
+    );
+    
+    if (linesInRange.length === 0) {
+        alert("No lines found in the selected range.");
+        return;
+    }
+    
+    analyzeMutation.mutate(linesInRange);
+  };
+
   const handleVoiceChange = (id, newVoiceId) => {
     setScriptLines(prev => prev.map(line => 
         line.id === id ? { ...line, voice_id: newVoiceId } : line
@@ -48,7 +91,7 @@ export function DirectorTable({ data, availableVoices }) {
   const getEmotionColor = (tag) => {
     if (!tag) return "bg-slate-100 text-slate-500";
     const t = tag.toLowerCase();
-    if (t.includes('angry') || t.includes('shout')) return "bg-red-100 text-red-700 border-red-200";
+    if (t.includes('angry') || t.includes('shout') || t.includes('aggressive')) return "bg-red-100 text-red-700 border-red-200";
     if (t.includes('sad') || t.includes('weep')) return "bg-blue-100 text-blue-700 border-blue-200";
     if (t.includes('whisper')) return "bg-purple-100 text-purple-700 border-purple-200";
     return "bg-green-100 text-green-700 border-green-200";
@@ -87,8 +130,13 @@ export function DirectorTable({ data, availableVoices }) {
         </div>
 
         <div className="flex gap-3">
-          <button className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 shadow-sm">
-            <Play className="w-4 h-4"/> Run AI Director
+          <button 
+            onClick={handleRunDirector} // <--- CONNECTED NOW
+            disabled={analyzeMutation.isPending}
+            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 shadow-sm disabled:opacity-50"
+          >
+            {analyzeMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin"/> : <Play className="w-4 h-4"/>}
+            Run AI Director
           </button>
         </div>
       </div>
