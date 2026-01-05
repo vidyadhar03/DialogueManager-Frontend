@@ -8,13 +8,13 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 // --- Pages ---
 import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
-// import { EpisodeDirector } from './pages/EpisodeDirector'; // Un-comment this when you create the file
+import { SeriesDetails } from './pages/SeriesDetails'; // <--- NEW
+import { EpisodeDirector } from './pages/EpisodeDirector'; // <--- NEW (Your Excel Tool)
 
 // --- Configuration ---
 const queryClient = new QueryClient();
 
 // --- Protected Route Wrapper ---
-// This kicks users back to /login if they aren't signed in
 const ProtectedRoute = ({ children }) => {
   const { user } = useAuth();
   if (!user) {
@@ -30,20 +30,28 @@ function AppRoutes() {
       {/* Public Route */}
       <Route path="/login" element={<Login />} />
       
-      {/* Protected Routes */}
+      {/* 1. DASHBOARD: List of Series */}
       <Route path="/dashboard" element={
         <ProtectedRoute>
           <Dashboard />
         </ProtectedRoute>
       } />
 
-      {/* TODO: Add your Episode Route here later
-         <Route path="/series/:seriesId/episode/:episodeId" element={
-           <ProtectedRoute><EpisodeDirector /></ProtectedRoute>
-         } /> 
-      */}
+      {/* 2. SERIES DETAILS: List of Episodes */}
+      <Route path="/series/:seriesId" element={
+        <ProtectedRoute>
+          <SeriesDetails />
+        </ProtectedRoute>
+      } />
+
+      {/* 3. EPISODE DIRECTOR: The Actual Tool */}
+      <Route path="/series/:seriesId/episode/:episodeId" element={
+        <ProtectedRoute>
+          <EpisodeDirector />
+        </ProtectedRoute>
+      } />
       
-      {/* Default Redirect: Send unknown URLs to Dashboard */}
+      {/* Default Redirect */}
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
