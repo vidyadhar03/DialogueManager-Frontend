@@ -1,188 +1,143 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { Play, Loader2, Save, Filter } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react'; // <--- ADDED useEffect HERE
+import { Play, Loader2, Save, Filter, Users, Mic } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { generateTags } from '../api';
+import { VoiceSelector } from './VoiceSelector';
 
-export function DirectorTable({ data }) {
-  // 1. Sanitize Data on Init: Ensure panel_number is a real Number
+export function DirectorTable({ data, availableVoices }) {
+  // 1. Sanitize Data
   const cleanData = useMemo(() => {
     if (!data) return [];
     return data.map(line => ({
         ...line,
-        panel_number: Number(line.panel_number) // Force number type
-    })).filter(line => !isNaN(line.panel_number)); // Remove bad rows
+        panel_number: Number(line.panel_number),
+        voice_id: line.voice_id || "" 
+    })).filter(line => !isNaN(line.panel_number));
   }, [data]);
 
   const [scriptLines, setScriptLines] = useState(cleanData);
 
-  // 2. Calculate Min/Max Safely
-  const minPanel = useMemo(() => {
-    if (cleanData.length === 0) return 1;
-    return Math.min(...cleanData.map(d => d.panel_number));
-  }, [cleanData]);
-
-  const maxPanel = useMemo(() => {
-    if (cleanData.length === 0) return 1;
-    return Math.max(...cleanData.map(d => d.panel_number));
-  }, [cleanData]);
-
-  // 3. Initialize State with safe defaults
-  const [startPanel, setStartPanel] = useState(minPanel);
-  const [endPanel, setEndPanel] = useState(minPanel);
-
-  // Sync state if data changes (e.g. new upload)
+  // Sync state when parent data changes (Casting Modal)
   useEffect(() => {
-    if (cleanData.length > 0) {
-        setScriptLines(cleanData);
-        // Recalculate min to ensure we reset correctly
-        const newMin = Math.min(...cleanData.map(d => d.panel_number));
-        setStartPanel(newMin);
-        setEndPanel(newMin);
-    }
+      setScriptLines(cleanData);
   }, [cleanData]);
 
-  // Mutation to call OpenAI
-  const aiMutation = useMutation({
-    mutationFn: generateTags,
-    onSuccess: (newTags) => {
-      setScriptLines(prev => prev.map(line => ({
-        ...line,
-        suggested_emotion: newTags[line.id] || line.suggested_emotion
-      })));
-      alert("Success! Emotions updated.");
-    },
-    onError: (err) => {
-        alert("AI Error: " + (err.response?.data?.detail || err.message));
-    }
-  });
+  // 2. State for Range Filtering
+  // Fix: Handle empty data gracefully to avoid NaN
+  const minPanel = useMemo(() => scriptLines.length ? Math.min(...scriptLines.map(d => d.panel_number)) : 0, [scriptLines]);
+  const maxPanel = useMemo(() => scriptLines.length ? Math.max(...scriptLines.map(d => d.panel_number)) : 0, [scriptLines]);
+  
+  const [startPanel, setStartPanel] = useState(minPanel || 1);
+  const [endPanel, setEndPanel] = useState(maxPanel || 1);
 
-  const handleRunAI = () => {
-    // Robust Filtering
-    const targetLines = scriptLines.filter(
-        line => line.panel_number >= startPanel && line.panel_number <= endPanel
-    );
-
-    if (targetLines.length === 0) {
-        alert(`No dialogues found in range ${startPanel}-${endPanel}. (Available: ${minPanel}-${maxPanel})`);
-        return;
+  // Update range defaults when data loads
+  useEffect(() => {
+    if (minPanel > 0) {
+        setStartPanel(minPanel);
+        setEndPanel(maxPanel);
     }
+  }, [minPanel, maxPanel]);
 
-    if (confirm(`Send ${targetLines.length} lines (Panel ${startPanel}-${endPanel}) to OpenAI?`)) {
-        aiMutation.mutate(targetLines);
-    }
+  // --- HANDLERS ---
+  const handleVoiceChange = (id, newVoiceId) => {
+    setScriptLines(prev => prev.map(line => 
+        line.id === id ? { ...line, voice_id: newVoiceId } : line
+    ));
   };
 
   const getEmotionColor = (tag) => {
     if (!tag) return "bg-slate-100 text-slate-500";
     const t = tag.toLowerCase();
-    if (t.includes('angry') || t.includes('shout') || t.includes('aggressive')) return "bg-red-100 text-red-700 border-red-200";
+    if (t.includes('angry') || t.includes('shout')) return "bg-red-100 text-red-700 border-red-200";
     if (t.includes('sad') || t.includes('weep')) return "bg-blue-100 text-blue-700 border-blue-200";
     if (t.includes('whisper')) return "bg-purple-100 text-purple-700 border-purple-200";
     return "bg-green-100 text-green-700 border-green-200";
   };
 
+  if (!data || data.length === 0) {
+      return <div className="text-center p-10 text-slate-400">No script data loaded yet.</div>;
+  }
+
   return (
     <div className="space-y-4">
-      {/* --- CONTROL BAR --- */}
+      {/* Control Bar */}
       <div className="flex flex-wrap justify-between items-center bg-white p-4 rounded-lg shadow-sm border border-slate-200 gap-4">
-        
         <div>
             <h2 className="text-lg font-bold text-slate-800">Episode Script</h2>
             <div className="flex gap-4 text-xs text-slate-500 mt-1">
                 <span>Total lines: {scriptLines.length}</span>
-                <span>Range Available: {minPanel} - {maxPanel}</span>
+                <span>Range: {minPanel} - {maxPanel}</span>
             </div>
         </div>
 
-        {/* Range Selector */}
+        {/* Range Inputs */}
         <div className="flex items-center gap-4 bg-slate-50 p-2 rounded-lg border border-slate-200">
-            <div className="flex items-center gap-2">
-                <Filter className="w-4 h-4 text-slate-400"/>
-                <span className="text-sm font-medium text-slate-600">Process Range:</span>
-            </div>
-            
-            <div className="flex items-center gap-2">
-                <label className="text-xs text-slate-500">Start</label>
-                <input 
-                    type="number" 
-                    // Removed 'min' attribute to allow free typing
-                    value={startPanel}
-                    onChange={(e) => setStartPanel(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-20 p-1 text-center border rounded text-sm font-semibold text-indigo-600"
-                />
-            </div>
+            <span className="text-sm font-medium text-slate-600 flex items-center gap-2">
+                <Filter className="w-4 h-4"/> Range:
+            </span>
+            <input 
+                type="number" value={startPanel} onChange={(e) => setStartPanel(Number(e.target.value))}
+                className="w-16 p-1 text-center border rounded text-sm font-semibold text-indigo-600"
+            />
             <span className="text-slate-300">→</span>
-            <div className="flex items-center gap-2">
-                <label className="text-xs text-slate-500">End</label>
-                <input 
-                    type="number" 
-                    // Removed 'max' attribute to allow free typing
-                    value={endPanel}
-                    onChange={(e) => setEndPanel(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-20 p-1 text-center border rounded text-sm font-semibold text-indigo-600"
-                />
-            </div>
+            <input 
+                type="number" value={endPanel} onChange={(e) => setEndPanel(Number(e.target.value))}
+                className="w-16 p-1 text-center border rounded text-sm font-semibold text-indigo-600"
+            />
         </div>
 
-        {/* Action Buttons */}
         <div className="flex gap-3">
-          <button 
-            onClick={handleRunAI}
-            disabled={aiMutation.isPending}
-            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 disabled:opacity-50 transition-all shadow-sm"
-          >
-            {aiMutation.isPending ? <Loader2 className="animate-spin w-4 h-4"/> : <Play className="w-4 h-4"/>}
-            {aiMutation.isPending ? "Processing..." : "Run AI Director"}
-          </button>
-          
-          <button className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-md hover:bg-emerald-700 transition-all shadow-sm">
-            <Save className="w-4 h-4"/>
-            Export Excel
+          <button className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 shadow-sm">
+            <Play className="w-4 h-4"/> Run AI Director
           </button>
         </div>
       </div>
 
-      {/* --- TABLE --- */}
+      {/* Table */}
       <div className="bg-white rounded-lg shadow border border-slate-200 overflow-hidden">
         <table className="w-full text-left border-collapse">
           <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-xs font-semibold">
             <tr>
               <th className="p-4 w-16">Panel</th>
               <th className="p-4 w-32">Character</th>
-              <th className="p-4 w-1/4">Context (Action/SFX)</th>
-              <th className="p-4">Dialogue</th>
-              <th className="p-4 w-48">Emotion Tag</th>
+              <th className="p-4 w-48 bg-indigo-50/50 text-indigo-700">Voice Actor</th>
+              <th className="p-4">Context & Dialogue</th>
+              <th className="p-4 w-40">Emotion</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {scriptLines.map((line) => {
-              // Safety check: ensure startPanel/endPanel are numbers
-              const s = Number(startPanel) || 0;
-              const e = Number(endPanel) || 99999;
-              const isSelected = line.panel_number >= s && line.panel_number <= e;
-              
+              if (line.panel_number < startPanel || line.panel_number > endPanel) return null;
+
               return (
-              <tr key={line.id} className={`transition-colors ${isSelected ? 'bg-indigo-50/30' : 'hover:bg-slate-50/50'}`}>
-                <td className="p-4 text-slate-400 font-mono text-sm">
-                    {line.panel_number}
-                    {isSelected && <span className="block w-2 h-2 bg-indigo-500 rounded-full mt-1"></span>}
+              <tr key={line.id} className="hover:bg-slate-50/50 transition-colors">
+                <td className="p-4 text-slate-400 font-mono text-sm align-top">{line.panel_number}</td>
+                
+                <td className="p-4 font-medium text-slate-700 align-top">
+                    <div className="flex items-center gap-2">
+                        <Users className="w-3 h-3 text-slate-300"/>
+                        {line.characters[0] || "Unknown"}
+                    </div>
                 </td>
-                <td className="p-4 font-medium text-slate-700">{line.characters[0] || "Unknown"}</td>
-                <td className="p-4 text-xs text-slate-500">
-                  <div className="font-semibold text-slate-600 mb-1">{line.action}</div>
-                  {line.sfx && <span className="inline-block bg-orange-50 text-orange-600 px-2 py-0.5 rounded border border-orange-100">{line.sfx}</span>}
+
+                <td className="p-4 align-top">
+                    <VoiceSelector 
+                        voices={availableVoices}
+                        value={line.voice_id}
+                        onChange={(newId) => handleVoiceChange(line.id, newId)}
+                    />
                 </td>
-                <td className="p-4 text-slate-800 leading-relaxed max-w-lg">
-                  "{line.dialogue}"
+
+                <td className="p-4 text-slate-800 leading-relaxed max-w-lg align-top">
+                  <div className="text-xs text-orange-600 font-bold mb-1 bg-orange-50 inline-block px-1 rounded">{line.action}</div>
+                  <div className="text-xs text-slate-400 mb-2 italic">{line.sfx}</div>
+                  <p>"{line.dialogue}"</p>
                 </td>
-                <td className="p-4">
-                   <input 
-                      type="text" 
-                      value={line.suggested_emotion || ""}
-                      placeholder="[Neutral]"
-                      className={`w-full px-3 py-1.5 rounded-md text-sm border transition-all ${getEmotionColor(line.suggested_emotion)} ${isSelected ? 'ring-2 ring-indigo-200' : ''}`}
-                      readOnly
-                   />
+
+                <td className="p-4 align-top">
+                   <div className={`px-3 py-1.5 rounded-md text-sm border text-center ${getEmotionColor(line.suggested_emotion)}`}>
+                      {line.suggested_emotion || "Neutral"}
+                   </div>
                 </td>
               </tr>
             )})}
