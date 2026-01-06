@@ -1,28 +1,34 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect } from 'react';
 
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-
-  // Check localStorage on load (so refreshing doesn't log you out)
-  useEffect(() => {
-    const storedUser = localStorage.getItem('motionx_user');
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
+  // 1. Initialize state with data from localStorage (if it exists)
+  const [user, setUser] = useState(() => {
+    try {
+      const savedUser = localStorage.getItem('motionx_user');
+      return savedUser ? JSON.parse(savedUser) : null;
+    } catch (error) {
+      console.error("Failed to parse user from local storage", error);
+      return null;
     }
-  }, []);
+  });
 
-  const login = (role) => {
-    const userData = { role, name: role === 'admin' ? 'Admin User' : 'Standard User' };
+  // 2. Login: Save to State AND LocalStorage
+  const login = (userData) => {
     setUser(userData);
     localStorage.setItem('motionx_user', JSON.stringify(userData));
   };
 
+  // 3. Logout: Clear State AND LocalStorage
   const logout = () => {
     setUser(null);
     localStorage.removeItem('motionx_user');
   };
+
+  // 4. (Optional) Check token validity with backend on mount
+  // If you have a token, you might want to verify it here via an API call.
+  // For now, simple localStorage persistence works for UI state.
 
   return (
     <AuthContext.Provider value={{ user, login, logout }}>
