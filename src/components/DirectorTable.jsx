@@ -8,8 +8,7 @@ import { DirectorTableRow } from './DirectorTableRow';
 
 const API_URL = "http://127.0.0.1:8000";
 
-// FIX: Added 'episodeNumber = 1' to the props list below
-export function DirectorTable({ data, availableVoices, episodeId, episodeNumber = 1 }) {
+export function DirectorTable({ data, availableVoices, episodeId, seriesId, episodeNumber = 1 }) {
   
   // 1. Sanitize Data
   const cleanData = useMemo(() => {
@@ -34,14 +33,17 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
   const [startPanel, setStartPanel] = useState(minPanel || 1);
   const [endPanel, setEndPanel] = useState(maxPanel || 1);
 
-  // --- NEW HANDLER: Single Line Emotion Retry ---
-  const handleRetryEmotion = (line) => {
-    // We reuse the batch mutation but send an array of 1 item
-    analyzeMutation.mutate([line]);
-  };
-
   useEffect(() => { setScriptLines(cleanData); }, [cleanData]);
   useEffect(() => { if (minPanel > 0) { setStartPanel(minPanel); setEndPanel(maxPanel); } }, [minPanel, maxPanel]);
+
+  // --- PERSISTENCE MUTATION (Auto-Save) ---
+  const persistLineMutation = useMutation({
+    mutationFn: async ({ lineId, payload }) => {
+        // ✅ NOW THIS WILL WORK because seriesId is defined
+        return axios.patch(`${API_URL}/series/${seriesId}/episodes/${episodeId}/script/${lineId}`, payload);
+    },
+    onError: (err) => console.error("Failed to auto-save:", err)
+  });
 
   // --- API MUTATIONS ---
   const analyzeMutation = useMutation({
@@ -61,10 +63,14 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
     },
     onSuccess: (emotionMap) => {
         setScriptLines(prev => prev.map(line => {
-            if (emotionMap[line.id]) return { ...line, suggested_emotion: emotionMap[line.id] };
+            if (emotionMap[line.id]) {
+                const newEmotion = emotionMap[line.id];
+                // AUTO-SAVE EMOTION
+                persistLineMutation.mutate({ lineId: line.id, payload: { suggested_emotion: newEmotion } });
+                return { ...line, suggested_emotion: newEmotion };
+            }
             return line;
         }));
-        alert("Emotions generated successfully!");
     },
     onError: (err) => alert("AI Error: " + err.message)
   });
@@ -81,10 +87,21 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
     onError: (err) => alert("Audio Gen Error: " + err.message)
   });
 
-  // --- ZIP HANDLER (Uses episodeNumber) ---
+  // --- HANDLERS ---
+
+  // 1. Single Line Retry Handlers
+  const handleRetryEmotion = (line) => {
+    analyzeMutation.mutate([line]);
+  };
+
+  const handleVoiceChange = (id, newVoiceId) => {
+    setScriptLines(prev => prev.map(line => line.id === id ? { ...line, voice_id: newVoiceId } : line));
+    // AUTO-SAVE VOICE
+    persistLineMutation.mutate({ lineId: id, payload: { voice_id: newVoiceId } });
+  };
+
   const handleDownloadZip = async () => {
     const linesWithAudio = scriptLines.filter(line => audioMap[line.id]);
-
     if (linesWithAudio.length === 0) return alert("No audio generated yet! Generate some lines first.");
 
     setIsZipping(true);
@@ -93,25 +110,18 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
     try {
         const promises = linesWithAudio.map(async (line) => {
             const blobUrl = audioMap[line.id];
-            
-            // Fetch blob
             const response = await fetch(blobUrl);
             const blob = await response.blob();
             
-            // ID format: "17_0" -> [17, 0]
             const [panelNo, dialogNo] = line.id.split('_');
-            
-            // Filename: ep_1_p_17_d_0.mp3
             const filename = `ep_${episodeNumber}_p_${panelNo}_d_${dialogNo}.mp3`;
             
             zip.file(filename, blob);
         });
 
         await Promise.all(promises);
-        
         const content = await zip.generateAsync({ type: "blob" });
         saveAs(content, `Episode_${episodeNumber}_Audio_Export.zip`);
-        
     } catch (err) {
         alert("Error creating zip: " + err.message);
     } finally {
@@ -119,7 +129,6 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
     }
   };
 
-  // --- HANDLERS ---
   const toggleSelection = (id) => {
     const newSet = new Set(selectedIds);
     if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
@@ -134,10 +143,6 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
         if (allSelected) newSet.delete(l.id); else newSet.add(l.id);
     });
     setSelectedIds(newSet);
-  };
-
-  const handleVoiceChange = (id, newVoiceId) => {
-    setScriptLines(prev => prev.map(line => line.id === id ? { ...line, voice_id: newVoiceId } : line));
   };
 
   const togglePlay = (lineId, url) => {
@@ -160,7 +165,6 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
 
   const handleGenerateAudio = (specificLine = null) => {
     let linesToProcess = specificLine ? [specificLine] : scriptLines.filter(l => selectedIds.has(l.id));
-    
     if (linesToProcess.length === 0) return alert("Select lines first.");
 
     const invalidLines = linesToProcess.filter(l => !l.voice_id || !l.suggested_emotion);
@@ -189,19 +193,14 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
             </div>
         </div>
         <div className="flex gap-3">
-          {/* ZIP BUTTON */}
-          <button 
-            onClick={handleDownloadZip} 
-            disabled={isZipping} 
-            className="flex items-center gap-2 bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-md hover:bg-slate-50 shadow-sm disabled:opacity-50 text-sm font-medium transition-colors"
-          >
-            {isZipping ? <Loader2 className="w-4 h-4 animate-spin"/> : <Archive className="w-4 h-4 text-orange-600"/>} 
-            Download All (.zip)
+          <button onClick={handleDownloadZip} disabled={isZipping} className="flex items-center gap-2 bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-md hover:bg-slate-50 shadow-sm disabled:opacity-50 text-sm font-medium transition-colors">
+            {isZipping ? <Loader2 className="w-4 h-4 animate-spin"/> : <Archive className="w-4 h-4 text-orange-600"/>} Download All (.zip)
           </button>
 
           <button onClick={handleGenerateEmotions} disabled={analyzeMutation.isPending || selectedIds.size === 0} className="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-4 py-2 rounded-md hover:bg-indigo-200 shadow-sm disabled:opacity-50 text-sm font-medium transition-colors">
             {analyzeMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin"/> : <Users className="w-4 h-4"/>} Generate Emotion Tags
           </button>
+          
           <button onClick={() => handleGenerateAudio()} disabled={audioMutation.isPending || selectedIds.size === 0} className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 shadow-sm disabled:opacity-50 text-sm font-medium transition-colors">
             {audioMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin"/> : <Volume2 className="w-4 h-4"/>} Generate Audios ({selectedIds.size})
           </button>
@@ -227,28 +226,25 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
           <tbody className="divide-y divide-slate-100">
             {scriptLines.map((line) => {
               if (line.panel_number < startPanel || line.panel_number > endPanel) return null;
-
-              // LOGIC: Check if this specific line is being analyzed currently
+              
               const isAnalyzing = analyzeMutation.isPending && analyzeMutation.variables?.lines?.some(l => l.id === line.id);
-              
-              // LOGIC: Check if this specific line is generating audio
               const isGenerating = audioMutation.isPending && audioMutation.variables?.lineId === line.id;
-              
+
               return (
                 <DirectorTableRow
                     key={line.id}
                     line={line}
                     isSelected={selectedIds.has(line.id)}
                     hasAudio={!!audioMap[line.id]}
-                    isGenerating={isGenerating} // <--- Pass specific loading state
-                    isAnalyzing={isAnalyzing}   // <--- Pass specific loading state
+                    isGenerating={isGenerating}
+                    isAnalyzing={isAnalyzing}
                     playingId={playingId}
                     audioUrl={audioMap[line.id]}
                     availableVoices={availableVoices}
                     onToggleSelection={toggleSelection}
                     onVoiceChange={handleVoiceChange}
-                    onGenerateAudio={handleGenerateAudio} // Re-use this for Retry Audio
-                    onRetryEmotion={handleRetryEmotion}   // New Handler for Retry Emotion
+                    onGenerateAudio={handleGenerateAudio}
+                    onRetryEmotion={handleRetryEmotion}
                     onTogglePlay={togglePlay}
                 />
               );
