@@ -1,12 +1,16 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Play, Loader2, Filter, Users, Download, Volume2, PlayCircle, PauseCircle } from 'lucide-react';
+import { Loader2, Users, Volume2, CheckSquare, Download, Archive, Play, Filter } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import axios from 'axios';
-import { VoiceSelector } from './VoiceSelector';
+import JSZip from 'jszip'; 
+import { saveAs } from 'file-saver';
+import { DirectorTableRow } from './DirectorTableRow';
 
 const API_URL = "http://127.0.0.1:8000";
 
-export function DirectorTable({ data, availableVoices }) {
+// FIX: Added 'episodeNumber = 1' to the props list below
+export function DirectorTable({ data, availableVoices, episodeId, episodeNumber = 1 }) {
+  
   // 1. Sanitize Data
   const cleanData = useMemo(() => {
     if (!data) return [];
@@ -18,31 +22,22 @@ export function DirectorTable({ data, availableVoices }) {
   }, [data]);
 
   const [scriptLines, setScriptLines] = useState(cleanData);
-  
-  // Audio State: { "line_id": "blob:http://..." }
+  const [selectedIds, setSelectedIds] = useState(new Set());
   const [audioMap, setAudioMap] = useState({});
   const [playingId, setPlayingId] = useState(null);
   const audioRef = useRef(new Audio());
+  const [isZipping, setIsZipping] = useState(false);
 
-  // Sync state when parent data changes
-  useEffect(() => {
-      setScriptLines(cleanData);
-  }, [cleanData]);
-
-  // Range Logic
+  // Range State
   const minPanel = useMemo(() => scriptLines.length ? Math.min(...scriptLines.map(d => d.panel_number)) : 0, [scriptLines]);
   const maxPanel = useMemo(() => scriptLines.length ? Math.max(...scriptLines.map(d => d.panel_number)) : 0, [scriptLines]);
   const [startPanel, setStartPanel] = useState(minPanel || 1);
   const [endPanel, setEndPanel] = useState(maxPanel || 1);
 
-  useEffect(() => {
-    if (minPanel > 0) {
-        setStartPanel(minPanel);
-        setEndPanel(maxPanel);
-    }
-  }, [minPanel, maxPanel]);
+  useEffect(() => { setScriptLines(cleanData); }, [cleanData]);
+  useEffect(() => { if (minPanel > 0) { setStartPanel(minPanel); setEndPanel(maxPanel); } }, [minPanel, maxPanel]);
 
-  // --- MUTATION: AI EMOTIONS ---
+  // --- API MUTATIONS ---
   const analyzeMutation = useMutation({
     mutationFn: async (linesToAnalyze) => {
         const payload = {
@@ -63,17 +58,14 @@ export function DirectorTable({ data, availableVoices }) {
             if (emotionMap[line.id]) return { ...line, suggested_emotion: emotionMap[line.id] };
             return line;
         }));
+        alert("Emotions generated successfully!");
     },
     onError: (err) => alert("AI Error: " + err.message)
   });
 
-  // --- MUTATION: GENERATE AUDIO ---
   const audioMutation = useMutation({
     mutationFn: async ({ lineId, text, voiceId }) => {
-        const response = await axios.post(`${API_URL}/generate_audio`, {
-            text: text,
-            voice_id: voiceId
-        }, { responseType: 'blob' }); // Important: Expect a file (blob)
+        const response = await axios.post(`${API_URL}/generate_audio`, { text, voice_id: voiceId }, { responseType: 'blob' });
         return { lineId, blob: response.data };
     },
     onSuccess: ({ lineId, blob }) => {
@@ -83,16 +75,63 @@ export function DirectorTable({ data, availableVoices }) {
     onError: (err) => alert("Audio Gen Error: " + err.message)
   });
 
-  // --- HANDLERS ---
-  const handleRunDirector = () => {
-    const linesInRange = scriptLines.filter(l => l.panel_number >= startPanel && l.panel_number <= endPanel);
-    if (linesInRange.length === 0) return alert("No lines in range.");
-    analyzeMutation.mutate(linesInRange);
+  // --- ZIP HANDLER (Uses episodeNumber) ---
+  const handleDownloadZip = async () => {
+    const linesWithAudio = scriptLines.filter(line => audioMap[line.id]);
+
+    if (linesWithAudio.length === 0) return alert("No audio generated yet! Generate some lines first.");
+
+    setIsZipping(true);
+    const zip = new JSZip();
+
+    try {
+        const promises = linesWithAudio.map(async (line) => {
+            const blobUrl = audioMap[line.id];
+            
+            // Fetch blob
+            const response = await fetch(blobUrl);
+            const blob = await response.blob();
+            
+            // ID format: "17_0" -> [17, 0]
+            const [panelNo, dialogNo] = line.id.split('_');
+            
+            // Filename: ep_1_p_17_d_0.mp3
+            const filename = `ep_${episodeNumber}_p_${panelNo}_d_${dialogNo}.mp3`;
+            
+            zip.file(filename, blob);
+        });
+
+        await Promise.all(promises);
+        
+        const content = await zip.generateAsync({ type: "blob" });
+        saveAs(content, `Episode_${episodeNumber}_Audio_Export.zip`);
+        
+    } catch (err) {
+        alert("Error creating zip: " + err.message);
+    } finally {
+        setIsZipping(false);
+    }
   };
 
-  const handleGenerateAudio = (line) => {
-    if (!line.voice_id) return alert("Please select a Voice Actor first!");
-    audioMutation.mutate({ lineId: line.id, text: line.dialogue, voiceId: line.voice_id });
+  // --- HANDLERS ---
+  const toggleSelection = (id) => {
+    const newSet = new Set(selectedIds);
+    if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
+    setSelectedIds(newSet);
+  };
+
+  const toggleSelectAllInRange = () => {
+    const linesInRange = scriptLines.filter(l => l.panel_number >= startPanel && l.panel_number <= endPanel);
+    const allSelected = linesInRange.every(l => selectedIds.has(l.id));
+    const newSet = new Set(selectedIds);
+    linesInRange.forEach(l => {
+        if (allSelected) newSet.delete(l.id); else newSet.add(l.id);
+    });
+    setSelectedIds(newSet);
+  };
+
+  const handleVoiceChange = (id, newVoiceId) => {
+    setScriptLines(prev => prev.map(line => line.id === id ? { ...line, voice_id: newVoiceId } : line));
   };
 
   const togglePlay = (lineId, url) => {
@@ -107,104 +146,99 @@ export function DirectorTable({ data, availableVoices }) {
     }
   };
 
-  const handleVoiceChange = (id, newVoiceId) => {
-    setScriptLines(prev => prev.map(line => line.id === id ? { ...line, voice_id: newVoiceId } : line));
+  const handleGenerateEmotions = () => {
+    const linesToProcess = scriptLines.filter(l => selectedIds.has(l.id));
+    if (linesToProcess.length === 0) return alert("Select lines first.");
+    analyzeMutation.mutate(linesToProcess);
   };
 
-  const getEmotionColor = (tag) => {
-    if (!tag) return "bg-slate-100 text-slate-500";
-    const t = tag.toLowerCase();
-    if (t.includes('angry') || t.includes('shout') || t.includes('aggressive')) return "bg-red-100 text-red-700 border-red-200";
-    if (t.includes('sad') || t.includes('weep')) return "bg-blue-100 text-blue-700 border-blue-200";
-    return "bg-green-100 text-green-700 border-green-200";
+  const handleGenerateAudio = (specificLine = null) => {
+    let linesToProcess = specificLine ? [specificLine] : scriptLines.filter(l => selectedIds.has(l.id));
+    
+    if (linesToProcess.length === 0) return alert("Select lines first.");
+
+    const invalidLines = linesToProcess.filter(l => !l.voice_id || !l.suggested_emotion);
+    if (invalidLines.length > 0) return alert(`Cannot generate audio for ${invalidLines.length} lines. Missing Voice ID or Emotion Tag.`);
+
+    linesToProcess.forEach(line => {
+        const tag = line.suggested_emotion ? line.suggested_emotion.replace(/[\[\]]/g, '') : "Neutral";
+        const text = `[${tag}] ${line.dialogue}`;
+        audioMutation.mutate({ lineId: line.id, text, voiceId: line.voice_id });
+    });
   };
 
   if (!data || data.length === 0) return <div className="text-center p-10 text-slate-400">No script data loaded.</div>;
 
   return (
     <div className="space-y-4">
-      {/* Control Bar */}
-      <div className="flex flex-wrap justify-between items-center bg-white p-4 rounded-lg shadow-sm border border-slate-200 gap-4">
-        <div>
-            <h2 className="text-lg font-bold text-slate-800">Episode Script</h2>
-            <div className="flex gap-4 text-xs text-slate-500 mt-1">
-                <span>Total lines: {scriptLines.length}</span>
-                <span>Range: {minPanel} - {maxPanel}</span>
+      {/* CONTROL BAR */}
+      <div className="flex flex-wrap justify-between items-center bg-white p-4 rounded-lg shadow-sm border border-slate-200 gap-4 sticky top-0 z-20">
+        <div className="flex items-center gap-4">
+            <div className="bg-indigo-50 text-indigo-700 px-3 py-1 rounded-md text-sm font-medium">{selectedIds.size} selected</div>
+            <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-lg border border-slate-200">
+                <span className="text-xs font-bold text-slate-500 uppercase px-2">Filter View:</span>
+                <input type="number" value={startPanel} onChange={(e) => setStartPanel(Number(e.target.value))} className="w-12 p-1 text-center border rounded text-sm"/>
+                <span className="text-slate-300">→</span>
+                <input type="number" value={endPanel} onChange={(e) => setEndPanel(Number(e.target.value))} className="w-12 p-1 text-center border rounded text-sm"/>
             </div>
         </div>
-        <div className="flex items-center gap-4 bg-slate-50 p-2 rounded-lg border border-slate-200">
-            <span className="text-sm font-medium text-slate-600 flex items-center gap-2"><Filter className="w-4 h-4"/> Range:</span>
-            <input type="number" value={startPanel} onChange={(e) => setStartPanel(Number(e.target.value))} className="w-16 p-1 text-center border rounded text-sm font-semibold text-indigo-600"/>
-            <span className="text-slate-300">→</span>
-            <input type="number" value={endPanel} onChange={(e) => setEndPanel(Number(e.target.value))} className="w-16 p-1 text-center border rounded text-sm font-semibold text-indigo-600"/>
+        <div className="flex gap-3">
+          {/* ZIP BUTTON */}
+          <button 
+            onClick={handleDownloadZip} 
+            disabled={isZipping} 
+            className="flex items-center gap-2 bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-md hover:bg-slate-50 shadow-sm disabled:opacity-50 text-sm font-medium transition-colors"
+          >
+            {isZipping ? <Loader2 className="w-4 h-4 animate-spin"/> : <Archive className="w-4 h-4 text-orange-600"/>} 
+            Download All (.zip)
+          </button>
+
+          <button onClick={handleGenerateEmotions} disabled={analyzeMutation.isPending || selectedIds.size === 0} className="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-4 py-2 rounded-md hover:bg-indigo-200 shadow-sm disabled:opacity-50 text-sm font-medium transition-colors">
+            {analyzeMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin"/> : <Users className="w-4 h-4"/>} Generate Emotion Tags
+          </button>
+          <button onClick={() => handleGenerateAudio()} disabled={audioMutation.isPending || selectedIds.size === 0} className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 shadow-sm disabled:opacity-50 text-sm font-medium transition-colors">
+            {audioMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin"/> : <Volume2 className="w-4 h-4"/>} Generate Audios ({selectedIds.size})
+          </button>
         </div>
-        <button onClick={handleRunDirector} disabled={analyzeMutation.isPending} className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 shadow-sm disabled:opacity-50">
-            {analyzeMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin"/> : <Play className="w-4 h-4"/>} Run AI Director
-        </button>
       </div>
 
-      {/* Table */}
+      {/* TABLE */}
       <div className="bg-white rounded-lg shadow border border-slate-200 overflow-hidden">
         <table className="w-full text-left border-collapse">
-          <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-xs font-semibold">
+          <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-xs font-semibold sticky top-0 z-10">
             <tr>
+              <th className="p-4 w-10 text-center cursor-pointer hover:bg-slate-100" onClick={toggleSelectAllInRange}>
+                  <CheckSquare className="w-4 h-4 mx-auto text-slate-400"/>
+              </th>
               <th className="p-4 w-16">Panel</th>
               <th className="p-4 w-32">Character</th>
-              <th className="p-4 w-48 bg-indigo-50/50 text-indigo-700">Voice Actor</th>
+              <th className="p-4 w-48 bg-indigo-50/50 text-indigo-700">Voice Actor <span className="text-red-500">*</span></th>
               <th className="p-4">Context & Dialogue</th>
-              <th className="p-4 w-32 text-center">Audio</th> {/* NEW COLUMN */}
-              <th className="p-4 w-32 text-center">Emotion</th>
+              <th className="p-4 w-32 text-center">Audio</th>
+              <th className="p-4 w-32 text-center">Emotion <span className="text-red-500">*</span></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {scriptLines.map((line) => {
               if (line.panel_number < startPanel || line.panel_number > endPanel) return null;
-              const hasAudio = !!audioMap[line.id];
-              const isGenerating = audioMutation.isPending && audioMutation.variables?.lineId === line.id;
-
+              
               return (
-              <tr key={line.id} className="hover:bg-slate-50/50 transition-colors">
-                <td className="p-4 text-slate-400 font-mono text-sm align-top">{line.panel_number}</td>
-                <td className="p-4 font-medium text-slate-700 align-top">
-                    <div className="flex items-center gap-2"><Users className="w-3 h-3 text-slate-300"/>{line.characters[0] || "Unknown"}</div>
-                </td>
-                <td className="p-4 align-top"><VoiceSelector voices={availableVoices} value={line.voice_id} onChange={(newId) => handleVoiceChange(line.id, newId)}/></td>
-                <td className="p-4 text-slate-800 leading-relaxed max-w-lg align-top">
-                  <div className="text-xs text-orange-600 font-bold mb-1 bg-orange-50 inline-block px-1 rounded">{line.action}</div>
-                  <div className="text-xs text-slate-400 mb-2 italic">{line.sfx}</div>
-                  <p>"{line.dialogue}"</p>
-                </td>
-                
-                {/* AUDIO CONTROLS */}
-                <td className="p-4 align-top text-center">
-                    {!hasAudio ? (
-                        <button 
-                            onClick={() => handleGenerateAudio(line)}
-                            disabled={isGenerating}
-                            className="text-slate-400 hover:text-indigo-600 transition-colors disabled:opacity-50"
-                            title="Generate Audio"
-                        >
-                            {isGenerating ? <Loader2 className="w-6 h-6 animate-spin text-indigo-600"/> : <Volume2 className="w-6 h-6"/>}
-                        </button>
-                    ) : (
-                        <div className="flex items-center justify-center gap-2">
-                            <button onClick={() => togglePlay(line.id, audioMap[line.id])} className="text-indigo-600 hover:text-indigo-800 transition-colors">
-                                {playingId === line.id ? <PauseCircle className="w-8 h-8"/> : <PlayCircle className="w-8 h-8"/>}
-                            </button>
-                            <a href={audioMap[line.id]} download={`line_${line.id}.mp3`} className="text-slate-400 hover:text-green-600 transition-colors" title="Download MP3">
-                                <Download className="w-5 h-5"/>
-                            </a>
-                        </div>
-                    )}
-                </td>
-
-                <td className="p-4 align-top text-center">
-                   <div className={`px-2 py-1 rounded-md text-xs border text-center font-medium ${getEmotionColor(line.suggested_emotion)}`}>
-                      {line.suggested_emotion || "Neutral"}
-                   </div>
-                </td>
-              </tr>
-            )})}
+                <DirectorTableRow
+                    key={line.id}
+                    line={line}
+                    isSelected={selectedIds.has(line.id)}
+                    hasAudio={!!audioMap[line.id]}
+                    isGenerating={audioMutation.isPending && audioMutation.variables?.lineId === line.id}
+                    playingId={playingId}
+                    audioUrl={audioMap[line.id]}
+                    availableVoices={availableVoices}
+                    onToggleSelection={toggleSelection}
+                    onVoiceChange={handleVoiceChange}
+                    onGenerateAudio={handleGenerateAudio}
+                    onTogglePlay={togglePlay}
+                />
+              );
+            })}
           </tbody>
         </table>
       </div>

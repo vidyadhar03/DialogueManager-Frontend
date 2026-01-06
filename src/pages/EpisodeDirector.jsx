@@ -113,6 +113,8 @@ export function EpisodeDirector() {
           <DirectorTable 
             data={scriptData} 
             availableVoices={voices || []} 
+            episodeId={episodeId}
+            episodeNumber={1}
           />
         )}
       </div>
