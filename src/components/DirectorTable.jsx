@@ -34,6 +34,12 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
   const [startPanel, setStartPanel] = useState(minPanel || 1);
   const [endPanel, setEndPanel] = useState(maxPanel || 1);
 
+  // --- NEW HANDLER: Single Line Emotion Retry ---
+  const handleRetryEmotion = (line) => {
+    // We reuse the batch mutation but send an array of 1 item
+    analyzeMutation.mutate([line]);
+  };
+
   useEffect(() => { setScriptLines(cleanData); }, [cleanData]);
   useEffect(() => { if (minPanel > 0) { setStartPanel(minPanel); setEndPanel(maxPanel); } }, [minPanel, maxPanel]);
 
@@ -221,6 +227,12 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
           <tbody className="divide-y divide-slate-100">
             {scriptLines.map((line) => {
               if (line.panel_number < startPanel || line.panel_number > endPanel) return null;
+
+              // LOGIC: Check if this specific line is being analyzed currently
+              const isAnalyzing = analyzeMutation.isPending && analyzeMutation.variables?.lines?.some(l => l.id === line.id);
+              
+              // LOGIC: Check if this specific line is generating audio
+              const isGenerating = audioMutation.isPending && audioMutation.variables?.lineId === line.id;
               
               return (
                 <DirectorTableRow
@@ -228,13 +240,15 @@ export function DirectorTable({ data, availableVoices, episodeId, episodeNumber 
                     line={line}
                     isSelected={selectedIds.has(line.id)}
                     hasAudio={!!audioMap[line.id]}
-                    isGenerating={audioMutation.isPending && audioMutation.variables?.lineId === line.id}
+                    isGenerating={isGenerating} // <--- Pass specific loading state
+                    isAnalyzing={isAnalyzing}   // <--- Pass specific loading state
                     playingId={playingId}
                     audioUrl={audioMap[line.id]}
                     availableVoices={availableVoices}
                     onToggleSelection={toggleSelection}
                     onVoiceChange={handleVoiceChange}
-                    onGenerateAudio={handleGenerateAudio}
+                    onGenerateAudio={handleGenerateAudio} // Re-use this for Retry Audio
+                    onRetryEmotion={handleRetryEmotion}   // New Handler for Retry Emotion
                     onTogglePlay={togglePlay}
                 />
               );
